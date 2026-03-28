@@ -8,12 +8,12 @@ import requests
 
 app = Flask(__name__)
 
-BITGET_API_KEY     = os.environ.get("BITGET_API_KEY")
-BITGET_SECRET_KEY  = os.environ.get("BITGET_SECRET_KEY")
-BITGET_PASSPHRASE  = os.environ.get("BITGET_PASSPHRASE")
-BITGET_BASE_URL    = "https://api.bitget.com"
-RR_RATIO           = float(os.environ.get("RR_RATIO", "0.5"))
-ORDER_SIZE_USDT    = float(os.environ.get("ORDER_SIZE_USDT", "100"))
+BITGET_API_KEY    = os.environ.get("BITGET_API_KEY")
+BITGET_SECRET_KEY = os.environ.get("BITGET_SECRET_KEY")
+BITGET_PASSPHRASE = os.environ.get("BITGET_PASSPHRASE")
+BITGET_BASE_URL   = "https://api.bitget.com"
+RR_RATIO          = float(os.environ.get("RR_RATIO", "0.5"))
+ORDER_SIZE_USDT   = float(os.environ.get("ORDER_SIZE_USDT", "100"))
 
 def sign(message, secret):
     return hmac.new(secret.encode(), message.encode(), hashlib.sha256).digest().hex()
@@ -22,17 +22,17 @@ def get_timestamp():
     return str(int(time.time() * 1000))
 
 def place_order(symbol, side, entry, sl, tp, size_usdt):
-    ts        = get_timestamp()
-    path      = "/api/v2/mix/order/place-order"
-    qty       = round(size_usdt / entry, 4)
-    body      = {
-        "symbol":      symbol + "USDT_UMCBL",
-        "marginCoin":  "USDT",
-        "size":        str(qty),
-        "side":        side,
-        "orderType":   "market",
-        "presetTakeProfitPrice": str(round(tp, 4)),
-        "presetStopLossPrice":   str(round(sl, 4))
+    ts       = get_timestamp()
+    path     = "/api/v2/mix/order/place-order"
+    qty      = round(size_usdt / entry, 4)
+    body     = {
+        "symbol":                 symbol + "USDT_UMCBL",
+        "marginCoin":             "USDT",
+        "size":                   str(qty),
+        "side":                   side,
+        "orderType":              "market",
+        "presetTakeProfitPrice":  str(round(tp, 4)),
+        "presetStopLossPrice":    str(round(sl, 4))
     }
     body_str  = json.dumps(body)
     msg       = ts + "POST" + path + body_str
@@ -60,7 +60,25 @@ def webhook():
         if entry == 0 or sl == 0:
             return jsonify({"error": "missing entry or sl"}), 400
 
-        # TP neu berechnen falls nicht mitgeschickt
         if tp == 0:
             risk = abs(entry - sl)
-            tp   = entry + risk * RR_RATIO if action ==
+            if action == "buy":
+                tp = entry + risk * RR_RATIO
+            else:
+                tp = entry - risk * RR_RATIO
+
+        side   = "open_long" if action == "buy" else "open_short"
+        result = place_order(symbol, side, entry, sl, tp, ORDER_SIZE_USDT)
+        print(f"Order result: {result}")
+        return jsonify({"status": "ok", "result": result})
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/", methods=["GET"])
+def health():
+    return "TCB Webhook Bot running!"
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
