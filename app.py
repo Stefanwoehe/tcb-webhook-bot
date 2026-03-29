@@ -16,6 +16,9 @@ BITGET_BASE_URL   = "https://api.bitget.com"
 RR_RATIO          = float(os.environ.get("RR_RATIO", "0.5"))
 ORDER_SIZE_USDT   = float(os.environ.get("ORDER_SIZE_USDT", "100"))
 
+# Cache für Tick-Sizes
+tick_cache = {}
+
 def sign(message, secret):
     mac = hmac.new(secret.encode(), message.encode(), hashlib.sha256)
     return base64.b64encode(mac.digest()).decode()
@@ -23,10 +26,35 @@ def sign(message, secret):
 def get_timestamp():
     return str(int(time.time() * 1000))
 
+def get_tick_size(symbol):
+    if symbol in tick_cache:
+        return tick_cache[symbol]
+    try:
+        url    = f"{BITGET_BASE_URL}/api/v2/mix/market/contracts"
+        params = {"symbol": symbol + "USDT", "productType": "USDT-FUTURES"}
+        resp   = requests.get(url, params=params, timeout=5)
+        data   = resp.json()
+        tick   = float(data["data"][0]["priceEndStep"])
+        if tick == 0:
+            tick = float(data["data"][0]["pricePlace"])
+            tick = 10 ** (-int(tick))
+        tick_cache[symbol] = tick
+        return tick
+    except Exception as e:
+        print(f"Tick-Size Fehler: {e}")
+        return None
+
+def format_price(price, tick):
+    if tick is None or tick == 0:
+        return str(price)
+    decimals = len(str(tick).rstrip('0').split('.')[-1]) if '.' in str(tick) else 0
+    return str(round(price, decimals))
+
 def place_order(symbol, side, entry, sl, tp, size_usdt):
     ts       = get_timestamp()
     path     = "/api/v2/mix/order/place-order"
     qty      = round(size_usdt / entry, 4)
+    tick     = get_tick_size(symbol)
     body     = {
         "symbol":                symbol + "USDT",
         "marginCoin":            "USDT",
@@ -34,8 +62,8 @@ def place_order(symbol, side, entry, sl, tp, size_usdt):
         "size":                  str(qty),
         "side":                  side,
         "orderType":             "market",
-        "presetTakeProfitPrice": str(round(tp, 6)),
-        "presetStopLossPrice":   str(round(sl, 6)),
+        "presetTakeProfitPrice": format_price(tp, tick),
+        "presetStopLossPrice":   format_price(sl, tick),
         "productType":           "USDT-FUTURES"
     }
     body_str  = json.dumps(body, separators=(',', ':'))
