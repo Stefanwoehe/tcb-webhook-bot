@@ -13,7 +13,7 @@ BITGET_API_KEY    = os.environ.get("BITGET_API_KEY")
 BITGET_SECRET_KEY = os.environ.get("BITGET_SECRET_KEY")
 BITGET_PASSPHRASE = os.environ.get("BITGET_PASSPHRASE")
 BITGET_BASE_URL   = "https://api.bitget.com"
-RR_RATIO          = float(os.environ.get("RR_RATIO", "0.5"))
+RR_RATIO          = float(os.environ.get("RR_RATIO", "1.0"))
 ORDER_SIZE_USDT   = float(os.environ.get("ORDER_SIZE_USDT", "100"))
 LEVERAGE          = int(os.environ.get("LEVERAGE", "3"))
 
