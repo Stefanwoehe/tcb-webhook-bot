@@ -116,12 +116,15 @@ def place_order(symbol, side, entry, sl, tp, size_usdt):
     tick = get_tick_size(symbol)
     qty  = round(size_usdt / entry, 4)
 
+    # One-way side mapping
+    order_side = "open_long" if side == "buy" else "open_short"
+
     body = {
         "symbol":                symbol + "USDT",
         "marginCoin":            "USDT",
         "marginMode":            "isolated",
         "size":                  str(qty),
-        "side":                  side,
+        "side":                  order_side,
         "orderType":             "market",
         "presetTakeProfitPrice": format_price(tp, tick),
         "presetStopLossPrice":   format_price(sl, tick),
