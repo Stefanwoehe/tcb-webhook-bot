@@ -18,7 +18,7 @@ ORDER_SIZE_USDT   = float(os.environ.get("ORDER_SIZE_USDT", "100"))
 LEVERAGE          = int(os.environ.get("LEVERAGE", "3"))
 
 tick_cache    = {}
-setup_cache   = set()  # Symbole die bereits eingerichtet wurden
+setup_cache   = set()
 
 def sign(message, secret):
     mac = hmac.new(secret.encode(), message.encode(), hashlib.sha256)
@@ -77,15 +77,16 @@ def setup_symbol(symbol, side):
 
     full_symbol = symbol + "USDT"
 
-    # 1. Margin Mode → Isolated
+    # 1. Margin Mode → Isolated (mit marginCoin)
     r1 = signed_post("/api/v2/mix/account/set-margin-mode", {
         "symbol":      full_symbol,
         "productType": "USDT-FUTURES",
+        "marginCoin":  "USDT",
         "marginMode":  "isolated"
     })
     print(f"Margin Mode {symbol}: {r1}")
 
-    # 2. Hebel setzen (Long & Short separat)
+    # 2. Hebel setzen – erst mit holdSide, bei 40774 (One-Way) ohne
     for hold_side in ["long", "short"]:
         r2 = signed_post("/api/v2/mix/account/set-leverage", {
             "symbol":      full_symbol,
@@ -96,16 +97,24 @@ def setup_symbol(symbol, side):
         })
         print(f"Hebel {symbol} {hold_side}: {r2}")
 
+        # 40774 = One-Way Symbol → ohne holdSide nochmal
+        if r2.get("code") == "40774":
+            r2b = signed_post("/api/v2/mix/account/set-leverage", {
+                "symbol":      full_symbol,
+                "productType": "USDT-FUTURES",
+                "marginCoin":  "USDT",
+                "leverage":    str(LEVERAGE)
+            })
+            print(f"Hebel {symbol} (one-way fallback): {r2b}")
+            break  # einmal reicht für one-way
+
     setup_cache.add(cache_key)
 
 def place_order(symbol, side, entry, sl, tp, size_usdt):
-    # Symbol einrichten (Isolated + Hebel)
     setup_symbol(symbol, side)
 
-    ts   = get_timestamp()
-    path = "/api/v2/mix/order/place-order"
-    qty  = round(size_usdt / entry, 4)
     tick = get_tick_size(symbol)
+    qty  = round(size_usdt / entry, 4)
 
     body = {
         "symbol":                symbol + "USDT",
@@ -119,7 +128,7 @@ def place_order(symbol, side, entry, sl, tp, size_usdt):
         "productType":           "USDT-FUTURES"
     }
 
-    result = signed_post(path, body)
+    result = signed_post("/api/v2/mix/order/place-order", body)
     return result
 
 @app.route("/webhook", methods=["POST"])
@@ -130,7 +139,13 @@ def webhook():
         symbol = data.get("symbol", "").replace("USDT", "").replace("USD", "")
         entry  = float(data.get("entry", 0))
         sl     = float(data.get("sl", 0))
-        tp     = float(data.get("tp", 0))
+        tp_raw = data.get("tp", 0)
+
+        # null-safe tp
+        try:
+            tp = float(tp_raw) if tp_raw not in (None, "null", "", 0, "0") else 0.0
+        except (ValueError, TypeError):
+            tp = 0.0
 
         print(f"Signal: {action} {symbol} entry={entry} sl={sl} tp={tp}")
 
@@ -162,4 +177,5 @@ def health():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
 
