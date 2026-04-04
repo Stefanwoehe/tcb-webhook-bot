@@ -17,8 +17,9 @@ RR_RATIO          = float(os.environ.get("RR_RATIO", "1.0"))
 ORDER_SIZE_USDT   = float(os.environ.get("ORDER_SIZE_USDT", "100"))
 LEVERAGE          = int(os.environ.get("LEVERAGE", "3"))
 
-tick_cache  = {}
-setup_cache = set()
+tick_cache    = {}
+setup_cache   = set()
+one_way_cache = set()  # Symbole die One-Way sind
 
 def sign(message, secret):
     mac = hmac.new(secret.encode(), message.encode(), hashlib.sha256)
@@ -69,21 +70,7 @@ def format_price(price, tick):
         decimals += 1
     return str(round(price, decimals))
 
-def is_one_way_symbol(symbol):
-    """Prüft ob das Symbol One-Way Mode nutzt"""
-    try:
-        url    = f"{BITGET_BASE_URL}/api/v2/mix/market/contracts"
-        params = {"symbol": symbol + "USDT", "productType": "USDT-FUTURES"}
-        resp   = requests.get(url, params=params, timeout=5)
-        data   = resp.json()
-        pos_mode = data["data"][0].get("posMode", "hedge_mode")
-        return pos_mode == "one_way_mode"
-    except Exception as e:
-        print(f"PosMode Fehler {symbol}: {e}")
-        return False
-
 def setup_symbol(symbol, side):
-    """Setzt Margin Mode und Hebel – nur einmal pro Symbol & Seite"""
     cache_key = f"{symbol}_{side}"
     if cache_key in setup_cache:
         return
@@ -99,7 +86,7 @@ def setup_symbol(symbol, side):
     })
     print(f"Margin Mode {symbol}: {r1}")
 
-    # 2. Hebel setzen – erst mit holdSide, bei 40774/400172 (One-Way) ohne
+    # 2. Hebel setzen
     for hold_side in ["long", "short"]:
         r2 = signed_post("/api/v2/mix/account/set-leverage", {
             "symbol":      full_symbol,
@@ -111,6 +98,8 @@ def setup_symbol(symbol, side):
         print(f"Hebel {symbol} {hold_side}: {r2}")
 
         if r2.get("code") in ["40774", "400172"]:
+            # One-Way Symbol → ohne holdSide
+            one_way_cache.add(symbol)
             r2b = signed_post("/api/v2/mix/account/set-leverage", {
                 "symbol":      full_symbol,
                 "productType": "USDT-FUTURES",
@@ -128,13 +117,19 @@ def place_order(symbol, side, entry, sl, tp, size_usdt):
     tick = get_tick_size(symbol)
     qty  = round(size_usdt / entry, 4)
 
-    # One-Way Side Mapping
-    order_side = "open_long" if side == "buy" else "open_short"
+    is_one_way = symbol in one_way_cache
 
+    if is_one_way:
+        # One-Way: buy/sell direkt
+        order_side = side
+    else:
+        # Hedge: open_long/open_short
+        order_side = "open_long" if side == "buy" else "open_short"
+
+    # Basis Body
     body = {
         "symbol":                symbol + "USDT",
         "marginCoin":            "USDT",
-        "marginMode":            "isolated",
         "size":                  str(qty),
         "side":                  order_side,
         "orderType":             "market",
@@ -143,14 +138,27 @@ def place_order(symbol, side, entry, sl, tp, size_usdt):
         "productType":           "USDT-FUTURES"
     }
 
-    result = signed_post("/api/v2/mix/order/place-order", body)
+    # marginMode nur für Hedge Symbole
+    if not is_one_way:
+        body["marginMode"] = "isolated"
 
-    # Falls side mismatch → fallback mit originalem side
-    if result.get("code") in ["40774", "400172"]:
-        print(f"Side mismatch für {symbol} – fallback auf buy/sell")
-        body["side"] = side
+    result = signed_post("/api/v2/mix/order/place-order", body)
+    print(f"Order result: {result}")
+
+    # Falls immer noch 40774 → anderes Format versuchen
+    if result.get("code") == "40774":
+        print(f"Fallback 1: marginMode entfernen für {symbol}")
+        body.pop("marginMode", None)
+        body["side"] = side  # buy/sell
         result = signed_post("/api/v2/mix/order/place-order", body)
-        print(f"Order fallback result: {result}")
+        print(f"Fallback 1 result: {result}")
+
+    # Falls immer noch Fehler → open_long/open_short versuchen
+    if result.get("code") == "40774":
+        print(f"Fallback 2: open_long/open_short für {symbol}")
+        body["side"] = "open_long" if side == "buy" else "open_short"
+        result = signed_post("/api/v2/mix/order/place-order", body)
+        print(f"Fallback 2 result: {result}")
 
     return result
 
@@ -195,7 +203,6 @@ def webhook():
 
         side   = "buy" if action == "buy" else "sell"
         result = place_order(symbol, side, entry, sl, tp, ORDER_SIZE_USDT)
-        print(f"Order result: {result}")
         return jsonify({"status": "ok", "result": result})
 
     except Exception as e:
