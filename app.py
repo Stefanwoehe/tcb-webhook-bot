@@ -17,9 +17,8 @@ RR_RATIO          = float(os.environ.get("RR_RATIO", "1.0"))
 ORDER_SIZE_USDT   = float(os.environ.get("ORDER_SIZE_USDT", "100"))
 LEVERAGE          = int(os.environ.get("LEVERAGE", "3"))
 
-tick_cache    = {}
-setup_cache   = set()
-one_way_cache = set()
+tick_cache  = {}
+setup_cache = set()
 
 def sign(message, secret):
     mac = hmac.new(secret.encode(), message.encode(), hashlib.sha256)
@@ -77,14 +76,6 @@ def setup_symbol(symbol, side):
 
     full_symbol = symbol + "USDT"
 
-    # 0. Position Mode → One-Way
-    r0 = signed_post("/api/v2/mix/account/set-position-mode", {
-        "symbol":      full_symbol,
-        "productType": "USDT-FUTURES",
-        "posMode":     "one_way_mode"
-    })
-    print(f"PosMode {symbol}: {r0}")
-
     # 1. Margin Mode → Isolated
     r1 = signed_post("/api/v2/mix/account/set-margin-mode", {
         "symbol":      full_symbol,
@@ -94,7 +85,7 @@ def setup_symbol(symbol, side):
     })
     print(f"Margin Mode {symbol}: {r1}")
 
-    # 2. Hebel setzen
+    # 2. Hebel setzen Long + Short
     for hold_side in ["long", "short"]:
         r2 = signed_post("/api/v2/mix/account/set-leverage", {
             "symbol":      full_symbol,
@@ -105,17 +96,6 @@ def setup_symbol(symbol, side):
         })
         print(f"Hebel {symbol} {hold_side}: {r2}")
 
-        if r2.get("code") in ["40774", "400172"]:
-            one_way_cache.add(symbol)
-            r2b = signed_post("/api/v2/mix/account/set-leverage", {
-                "symbol":      full_symbol,
-                "productType": "USDT-FUTURES",
-                "marginCoin":  "USDT",
-                "leverage":    str(LEVERAGE)
-            })
-            print(f"Hebel {symbol} (one-way fallback): {r2b}")
-            break
-
     setup_cache.add(cache_key)
 
 def place_order(symbol, side, entry, sl, tp, size_usdt):
@@ -124,12 +104,8 @@ def place_order(symbol, side, entry, sl, tp, size_usdt):
     tick = get_tick_size(symbol)
     qty  = round(size_usdt / entry, 4)
 
-    is_one_way = symbol in one_way_cache
-
-    if is_one_way:
-        order_side = side
-    else:
-        order_side = "open_long" if side == "buy" else "open_short"
+    # Hedge Mode: open_long / open_short
+    order_side = "open_long" if side == "buy" else "open_short"
 
     body = {
         "symbol":                symbol + "USDT",
@@ -145,39 +121,6 @@ def place_order(symbol, side, entry, sl, tp, size_usdt):
 
     result = signed_post("/api/v2/mix/order/place-order", body)
     print(f"Order result: {result}")
-
-    # Fallback 1: open_long/open_short + marginMode
-    if result.get("code") in ["40774", "400172"]:
-        print(f"Fallback 1: open_long/open_short + marginMode für {symbol}")
-        one_way_cache.add(symbol)
-        body["marginMode"] = "isolated"
-        body["side"] = "open_long" if side == "buy" else "open_short"
-        result = signed_post("/api/v2/mix/order/place-order", body)
-        print(f"Fallback 1 result: {result}")
-
-    # Fallback 2: buy/sell ohne marginMode
-    if result.get("code") in ["40774", "400172"]:
-        print(f"Fallback 2: buy/sell ohne marginMode für {symbol}")
-        body.pop("marginMode", None)
-        body["side"] = side
-        result = signed_post("/api/v2/mix/order/place-order", body)
-        print(f"Fallback 2 result: {result}")
-
-    # Fallback 3: buy/sell + marginMode
-    if result.get("code") in ["40774", "400172"]:
-        print(f"Fallback 3: buy/sell + marginMode für {symbol}")
-        body["marginMode"] = "isolated"
-        body["side"] = side
-        result = signed_post("/api/v2/mix/order/place-order", body)
-        print(f"Fallback 3 result: {result}")
-
-    # Fallback 4: open_long/open_short ohne marginMode
-    if result.get("code") in ["40774", "400172"]:
-        print(f"Fallback 4: open_long/open_short ohne marginMode für {symbol}")
-        body.pop("marginMode", None)
-        body["side"] = "open_long" if side == "buy" else "open_short"
-        result = signed_post("/api/v2/mix/order/place-order", body)
-        print(f"Fallback 4 result: {result}")
 
     return result
 
