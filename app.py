@@ -126,6 +126,7 @@ def place_order(symbol, side, entry, sl, tp, size_usdt):
     body = {
         "symbol":                symbol + "USDT",
         "marginCoin":            "USDT",
+        "marginMode":            "isolated",
         "size":                  str(qty),
         "side":                  order_side,
         "orderType":             "market",
@@ -134,27 +135,41 @@ def place_order(symbol, side, entry, sl, tp, size_usdt):
         "productType":           "USDT-FUTURES"
     }
 
-    if not is_one_way:
-        body["marginMode"] = "isolated"
-
     result = signed_post("/api/v2/mix/order/place-order", body)
     print(f"Order result: {result}")
 
-    # Fallback 1: 40774 oder 400172 → One-Way Format
+    # Fallback 1: open_long/open_short + marginMode
     if result.get("code") in ["40774", "400172"]:
-        print(f"Fallback 1: One-Way für {symbol}")
+        print(f"Fallback 1: open_long/open_short + marginMode für {symbol}")
         one_way_cache.add(symbol)
-        body.pop("marginMode", None)
-        body["side"] = side
+        body["marginMode"] = "isolated"
+        body["side"] = "open_long" if side == "buy" else "open_short"
         result = signed_post("/api/v2/mix/order/place-order", body)
         print(f"Fallback 1 result: {result}")
 
-    # Fallback 2: immer noch Fehler → open_long/open_short
+    # Fallback 2: buy/sell ohne marginMode
     if result.get("code") in ["40774", "400172"]:
-        print(f"Fallback 2: open_long/open_short für {symbol}")
-        body["side"] = "open_long" if side == "buy" else "open_short"
+        print(f"Fallback 2: buy/sell ohne marginMode für {symbol}")
+        body.pop("marginMode", None)
+        body["side"] = side
         result = signed_post("/api/v2/mix/order/place-order", body)
         print(f"Fallback 2 result: {result}")
+
+    # Fallback 3: buy/sell mit marginMode
+    if result.get("code") in ["40774", "400172"]:
+        print(f"Fallback 3: buy/sell + marginMode für {symbol}")
+        body["marginMode"] = "isolated"
+        body["side"] = side
+        result = signed_post("/api/v2/mix/order/place-order", body)
+        print(f"Fallback 3 result: {result}")
+
+    # Fallback 4: open_long/open_short ohne marginMode
+    if result.get("code") in ["40774", "400172"]:
+        print(f"Fallback 4: open_long/open_short ohne marginMode für {symbol}")
+        body.pop("marginMode", None)
+        body["side"] = "open_long" if side == "buy" else "open_short"
+        result = signed_post("/api/v2/mix/order/place-order", body)
+        print(f"Fallback 4 result: {result}")
 
     return result
 
