@@ -19,7 +19,7 @@ LEVERAGE          = int(os.environ.get("LEVERAGE", "3"))
 
 tick_cache    = {}
 setup_cache   = set()
-one_way_cache = set()  # Symbole die One-Way sind
+one_way_cache = set()
 
 def sign(message, secret):
     mac = hmac.new(secret.encode(), message.encode(), hashlib.sha256)
@@ -98,7 +98,6 @@ def setup_symbol(symbol, side):
         print(f"Hebel {symbol} {hold_side}: {r2}")
 
         if r2.get("code") in ["40774", "400172"]:
-            # One-Way Symbol → ohne holdSide
             one_way_cache.add(symbol)
             r2b = signed_post("/api/v2/mix/account/set-leverage", {
                 "symbol":      full_symbol,
@@ -120,13 +119,10 @@ def place_order(symbol, side, entry, sl, tp, size_usdt):
     is_one_way = symbol in one_way_cache
 
     if is_one_way:
-        # One-Way: buy/sell direkt
         order_side = side
     else:
-        # Hedge: open_long/open_short
         order_side = "open_long" if side == "buy" else "open_short"
 
-    # Basis Body
     body = {
         "symbol":                symbol + "USDT",
         "marginCoin":            "USDT",
@@ -138,23 +134,23 @@ def place_order(symbol, side, entry, sl, tp, size_usdt):
         "productType":           "USDT-FUTURES"
     }
 
-    # marginMode nur für Hedge Symbole
     if not is_one_way:
         body["marginMode"] = "isolated"
 
     result = signed_post("/api/v2/mix/order/place-order", body)
     print(f"Order result: {result}")
 
-    # Falls immer noch 40774 → anderes Format versuchen
-    if result.get("code") == "40774":
-        print(f"Fallback 1: marginMode entfernen für {symbol}")
+    # Fallback 1: 40774 oder 400172 → One-Way Format
+    if result.get("code") in ["40774", "400172"]:
+        print(f"Fallback 1: One-Way für {symbol}")
+        one_way_cache.add(symbol)
         body.pop("marginMode", None)
-        body["side"] = side  # buy/sell
+        body["side"] = side
         result = signed_post("/api/v2/mix/order/place-order", body)
         print(f"Fallback 1 result: {result}")
 
-    # Falls immer noch Fehler → open_long/open_short versuchen
-    if result.get("code") == "40774":
+    # Fallback 2: immer noch Fehler → open_long/open_short
+    if result.get("code") in ["40774", "400172"]:
         print(f"Fallback 2: open_long/open_short für {symbol}")
         body["side"] = "open_long" if side == "buy" else "open_short"
         result = signed_post("/api/v2/mix/order/place-order", body)
@@ -172,7 +168,6 @@ def webhook():
         sl_raw = data.get("sl", 0)
         tp_raw = data.get("tp", 0)
 
-        # null-safe conversion
         try:
             sl = float(sl_raw) if sl_raw not in (None, "null", "", 0, "0") else 0.0
         except (ValueError, TypeError):
@@ -195,7 +190,6 @@ def webhook():
             risk = abs(entry - sl)
             tp   = entry + risk * RR_RATIO if action == "buy" else entry - risk * RR_RATIO
 
-        # Plausibilitätsprüfung
         if action == "buy" and (sl >= entry or tp <= entry):
             return jsonify({"error": f"buy: sl={sl} muss < entry={entry}, tp={tp} muss > entry"}), 400
         if action == "sell" and (sl <= entry or tp >= entry):
