@@ -17,8 +17,8 @@ RR_RATIO          = float(os.environ.get("RR_RATIO", "1.0"))
 ORDER_SIZE_USDT   = float(os.environ.get("ORDER_SIZE_USDT", "100"))
 LEVERAGE          = int(os.environ.get("LEVERAGE", "3"))
 
-tick_cache    = {}
-setup_cache   = set()
+tick_cache  = {}
+setup_cache = set()
 
 def sign(message, secret):
     mac = hmac.new(secret.encode(), message.encode(), hashlib.sha256)
@@ -69,6 +69,19 @@ def format_price(price, tick):
         decimals += 1
     return str(round(price, decimals))
 
+def is_one_way_symbol(symbol):
+    """Prüft ob das Symbol One-Way Mode nutzt"""
+    try:
+        url    = f"{BITGET_BASE_URL}/api/v2/mix/market/contracts"
+        params = {"symbol": symbol + "USDT", "productType": "USDT-FUTURES"}
+        resp   = requests.get(url, params=params, timeout=5)
+        data   = resp.json()
+        pos_mode = data["data"][0].get("posMode", "hedge_mode")
+        return pos_mode == "one_way_mode"
+    except Exception as e:
+        print(f"PosMode Fehler {symbol}: {e}")
+        return False
+
 def setup_symbol(symbol, side):
     """Setzt Margin Mode und Hebel – nur einmal pro Symbol & Seite"""
     cache_key = f"{symbol}_{side}"
@@ -77,7 +90,7 @@ def setup_symbol(symbol, side):
 
     full_symbol = symbol + "USDT"
 
-    # 1. Margin Mode → Isolated (mit marginCoin)
+    # 1. Margin Mode → Isolated
     r1 = signed_post("/api/v2/mix/account/set-margin-mode", {
         "symbol":      full_symbol,
         "productType": "USDT-FUTURES",
@@ -86,7 +99,7 @@ def setup_symbol(symbol, side):
     })
     print(f"Margin Mode {symbol}: {r1}")
 
-    # 2. Hebel setzen – erst mit holdSide, bei 40774 (One-Way) ohne
+    # 2. Hebel setzen – erst mit holdSide, bei 40774/400172 (One-Way) ohne
     for hold_side in ["long", "short"]:
         r2 = signed_post("/api/v2/mix/account/set-leverage", {
             "symbol":      full_symbol,
@@ -97,8 +110,7 @@ def setup_symbol(symbol, side):
         })
         print(f"Hebel {symbol} {hold_side}: {r2}")
 
-        # 40774 = One-Way Symbol → ohne holdSide nochmal
-        if r2.get("code") == "40774":
+        if r2.get("code") in ["40774", "400172"]:
             r2b = signed_post("/api/v2/mix/account/set-leverage", {
                 "symbol":      full_symbol,
                 "productType": "USDT-FUTURES",
@@ -106,7 +118,7 @@ def setup_symbol(symbol, side):
                 "leverage":    str(LEVERAGE)
             })
             print(f"Hebel {symbol} (one-way fallback): {r2b}")
-            break  # einmal reicht für one-way
+            break
 
     setup_cache.add(cache_key)
 
@@ -116,7 +128,7 @@ def place_order(symbol, side, entry, sl, tp, size_usdt):
     tick = get_tick_size(symbol)
     qty  = round(size_usdt / entry, 4)
 
-    # One-way side mapping
+    # One-Way Side Mapping
     order_side = "open_long" if side == "buy" else "open_short"
 
     body = {
@@ -132,6 +144,14 @@ def place_order(symbol, side, entry, sl, tp, size_usdt):
     }
 
     result = signed_post("/api/v2/mix/order/place-order", body)
+
+    # Falls side mismatch → fallback mit originalem side
+    if result.get("code") in ["40774", "400172"]:
+        print(f"Side mismatch für {symbol} – fallback auf buy/sell")
+        body["side"] = side
+        result = signed_post("/api/v2/mix/order/place-order", body)
+        print(f"Order fallback result: {result}")
+
     return result
 
 @app.route("/webhook", methods=["POST"])
@@ -141,10 +161,15 @@ def webhook():
         action = data.get("action", "").lower()
         symbol = data.get("symbol", "").replace("USDT", "").replace("USD", "")
         entry  = float(data.get("entry", 0))
-        sl     = float(data.get("sl", 0))
+        sl_raw = data.get("sl", 0)
         tp_raw = data.get("tp", 0)
 
-        # null-safe tp
+        # null-safe conversion
+        try:
+            sl = float(sl_raw) if sl_raw not in (None, "null", "", 0, "0") else 0.0
+        except (ValueError, TypeError):
+            sl = 0.0
+
         try:
             tp = float(tp_raw) if tp_raw not in (None, "null", "", 0, "0") else 0.0
         except (ValueError, TypeError):
@@ -152,8 +177,11 @@ def webhook():
 
         print(f"Signal: {action} {symbol} entry={entry} sl={sl} tp={tp}")
 
-        if entry == 0 or sl == 0:
-            return jsonify({"error": "missing entry or sl"}), 400
+        if entry == 0 or entry == 1.0:
+            return jsonify({"error": "invalid entry price"}), 400
+
+        if sl == 0:
+            return jsonify({"error": "missing sl"}), 400
 
         if tp == 0:
             risk = abs(entry - sl)
@@ -180,5 +208,3 @@ def health():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
-
