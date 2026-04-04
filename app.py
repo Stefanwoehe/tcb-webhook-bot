@@ -77,6 +77,14 @@ def setup_symbol(symbol, side):
 
     full_symbol = symbol + "USDT"
 
+    # 0. Position Mode → One-Way
+    r0 = signed_post("/api/v2/mix/account/set-position-mode", {
+        "symbol":      full_symbol,
+        "productType": "USDT-FUTURES",
+        "posMode":     "one_way_mode"
+    })
+    print(f"PosMode {symbol}: {r0}")
+
     # 1. Margin Mode → Isolated
     r1 = signed_post("/api/v2/mix/account/set-margin-mode", {
         "symbol":      full_symbol,
@@ -155,7 +163,7 @@ def place_order(symbol, side, entry, sl, tp, size_usdt):
         result = signed_post("/api/v2/mix/order/place-order", body)
         print(f"Fallback 2 result: {result}")
 
-    # Fallback 3: buy/sell mit marginMode
+    # Fallback 3: buy/sell + marginMode
     if result.get("code") in ["40774", "400172"]:
         print(f"Fallback 3: buy/sell + marginMode für {symbol}")
         body["marginMode"] = "isolated"
